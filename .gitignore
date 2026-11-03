@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.private/
+.env*
+*.log
+*.tsbuildinfo
+server/report-route.js
+lib/*.js
+.DS_Store

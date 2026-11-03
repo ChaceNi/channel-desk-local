@@ -1,0 +1,15 @@
+import {mkdir,readFile,writeFile,rename,lstat,chmod} from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+export const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+export const definitions=[{id:'65380483281',scope:'lakeside',label:'Lakeside Collection',defaultDomain:'lakeside-asc.myshopify.com'},{id:'66814050502',scope:'ltd',label:'LTD Commodities',defaultDomain:'ltdcommodities-asc.myshopify.com'}];
+export const directory=process.env.CHANNEL_DESK_PRIVATE_DIR||path.join(ROOT,'.private');
+const filename=path.join(directory,'stores.json');
+export async function readConfig(){try{const meta=await lstat(filename);if(meta.isSymbolicLink()||!meta.isFile())throw Error('本地配置路径无效。');await chmod(filename,0o600);const c=JSON.parse(await readFile(filename,'utf8'));if(!c||typeof c!=='object'||Array.isArray(c))throw Error('配置格式无效。');return c;}catch(e){if(e.code==='ENOENT')return {};throw Error('本地配置无法读取，请检查 .private/stores.json。')}}
+export function validateDomain(value){if(typeof value!=='string'||!/^([a-z0-9][a-z0-9-]*[a-z0-9]|[a-z0-9])\.myshopify\.com$/.test(value))throw Error('请填写准确的 xxx.myshopify.com 域名，不包含 https 或路径。');return value;}
+export async function saveStore(input){const def=definitions.find(d=>d.id===input.storeId);if(!def)throw Error('店铺选择无效。');const domain=validateDomain(input.domain);if(!['client_credentials','access_token'].includes(input.mode))throw Error('授权方式无效。');const old=await readConfig(),previous=old[def.id]||{};
+ const secret=(name)=>{const value=input[name];if(value!==undefined&&(typeof value!=='string'||value.length>4096||/[\r\n]/.test(value)))throw Error('凭据格式无效。');return value||((previous.domain===domain&&previous.mode===input.mode)?previous[name]:'')||'';};
+ const config={domain,mode:input.mode};if(input.mode==='client_credentials'){config.clientId=secret('clientId');config.clientSecret=secret('clientSecret');if(!config.clientId||!config.clientSecret)throw Error('请填写 Client ID 与 Client Secret。');}else{config.accessToken=secret('accessToken');if(!config.accessToken)throw Error('请填写此店铺已授权的 Admin API Access Token。');}
+ await mkdir(directory,{recursive:true,mode:0o700});if((await lstat(directory)).isSymbolicLink())throw Error('凭据目录不能为符号链接。');await chmod(directory,0o700);const temp=filename+'.'+process.pid+'.tmp';await writeFile(temp,JSON.stringify({...old,[def.id]:config},null,2)+'\n',{mode:0o600,flag:'wx'});await rename(temp,filename);return def;
+}
+export async function publicConfig(){const config=await readConfig();return definitions.map(d=>({id:d.id,scope:d.scope,label:d.label,domain:config[d.id]?.domain||d.defaultDomain,mode:config[d.id]?.mode||'client_credentials',configured:!!config[d.id],hasClientSecret:!!config[d.id]?.clientSecret,hasAccessToken:!!config[d.id]?.accessToken,clientId:config[d.id]?.clientId||''}));}
