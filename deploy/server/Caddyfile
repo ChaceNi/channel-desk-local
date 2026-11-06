@@ -1,0 +1,21 @@
+{
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+			}
+		}
+	}
+}
+{$CHANNEL_DESK_DOMAIN} {
+	log {
+		format filter {
+			wrap json
+			fields {
+				request>uri delete
+			}
+		}
+	}
+	reverse_proxy app:5188
+}

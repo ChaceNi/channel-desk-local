@@ -1,0 +1,62 @@
+name: channel-desk
+services:
+  app:
+    image: ${CHANNEL_DESK_IMAGE:-channel-desk:local}
+    build:
+      context: .
+      args:
+        BUILD_COMMIT: ${CHANNEL_DESK_BUILD_COMMIT:-}
+        BUILD_DIRTY: ${CHANNEL_DESK_BUILD_DIRTY:-true}
+    user: "${CHANNEL_DESK_UID:-1000}:${CHANNEL_DESK_GID:-1000}"
+    environment:
+      NODE_ENV: production
+      CHANNEL_DESK_MODE: production
+      PORT: "5188"
+      CHANNEL_DESK_CONFIG_FILE: /run/channel-desk/runtime.config.json
+    volumes:
+      - type: bind
+        source: ${CHANNEL_DESK_CONFIG_FILE:-/etc/channel-desk/runtime.config.json}
+        target: /run/channel-desk/runtime.config.json
+        read_only: true
+        bind:
+          create_host_path: false
+    ports:
+      - "127.0.0.1:${CHANNEL_DESK_HTTP_PORT:-5188}:5188"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  proxy:
+    image: caddy:2.11.8-alpine
+    profiles: [https]
+    environment:
+      CHANNEL_DESK_DOMAIN: ${CHANNEL_DESK_DOMAIN:-sales.example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/server/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,23 @@
+# Loaded within nginx's http {} context, e.g. /etc/nginx/conf.d/channel-desk.conf.
+# Replace sales.example.com and certificate paths before enabling.
+log_format channel_desk_safe '$remote_addr $request_method $uri $status $request_time';
+server {
+    listen 80;
+    server_name sales.example.com;
+    access_log /var/log/nginx/channel-desk-access.log channel_desk_safe;
+    return 301 https://sales.example.com$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name sales.example.com;
+    ssl_certificate /etc/letsencrypt/live/sales.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/sales.example.com/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    access_log /var/log/nginx/channel-desk-access.log channel_desk_safe;
+    location / {
+        proxy_pass http://127.0.0.1:5188;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 180s;
+    }
+}

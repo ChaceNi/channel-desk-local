@@ -1,22 +1,25 @@
 {
   "name": "channel-desk-local",
-  "version": "1.0.0",
+  "version": "1.2.2",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=24 <25"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
     "start": "node server/index.mjs",
     "test": "node --test tests/*.test.mjs",
     "password": "node scripts/set-password.mjs",
-    "share": "node scripts/start-local.mjs"
+    "share": "node scripts/start-local.mjs",
+    "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --jsx react-jsx --skipLibCheck --allowImportingTsExtensions src/main.tsx src/Dashboard.tsx src/Setup.tsx src/Access.tsx",
+    "check": "node scripts/check-repository.mjs && npm run build && npm run typecheck && npm test",
+    "release": "npm run check && python3 scripts/package-release.py"
   },
   "dependencies": {
     "react": "19.2.6",
     "react-dom": "19.2.6",
-    "lucide-react": "^1.31.0"
+    "lucide-react": "1.31.0"
   },
   "devDependencies": {
     "vite": "8.0.13",

@@ -1,0 +1,109 @@
+name: Deploy server
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: 'main, a release tag, or a commit in main history'
+        type: string
+        required: true
+        default: main
+      confirm_production:
+        description: 'Confirm deployment and session restart on the configured server'
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: ordinary-server-production
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && inputs.confirm_production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.revision.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.release_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: revision
+        run: |
+          git merge-base --is-ancestor HEAD origin/main
+          printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci --include=dev
+      - run: npm run release
+      - name: Build and test the server image
+        run: |
+          docker build --build-arg BUILD_COMMIT="$(git rev-parse HEAD)" --build-arg BUILD_DIRTY=false -t channel-desk:ci .
+          bash deploy/server/smoke-container.sh channel-desk:ci
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: server-package
+          path: |
+            release/channel-desk-server.zip
+            release/release-manifest.json
+          if-no-files-found: error
+          retention-days: 30
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: server-package
+          path: release
+      - name: Verify release archive
+        env:
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,pathlib,os
+          root=pathlib.Path('release');manifest=json.loads((root/'release-manifest.json').read_text())
+          record=next(v for v in manifest['artifacts'] if v['file']=='channel-desk-server.zip')
+          assert hashlib.sha256((root/record['file']).read_bytes()).hexdigest()==record['sha256']
+          assert manifest['commit']==os.environ['EXPECTED_COMMIT'] and manifest['dirty'] is False
+          PY
+      - name: Transfer and deploy over pinned SSH
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ vars.SERVER_SSH_PORT || '22' }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_KNOWN_HOSTS: ${{ secrets.SERVER_KNOWN_HOSTS }}
+          DEPLOY_ROOT: ${{ vars.SERVER_DEPLOY_ROOT }}
+          CONFIG_FILE: ${{ vars.SERVER_CONFIG_FILE }}
+          PROXY_MODE: ${{ vars.SERVER_PROXY_MODE || 'caddy' }}
+          APP_PORT: ${{ vars.SERVER_APP_PORT || '5188' }}
+          EXPECTED_COMMIT: ${{ needs.build.outputs.commit }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$SERVER_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+          [[ "$SERVER_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ "$SERVER_PORT" =~ ^[0-9]+$ ]] && ((SERVER_PORT>=1 && SERVER_PORT<=65535))
+          [[ "$APP_PORT" =~ ^[0-9]+$ ]] && ((APP_PORT>=1024 && APP_PORT<=65535))
+          [[ "$DEPLOY_ROOT" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "$DEPLOY_ROOT" != *..* ]]
+          [[ "$CONFIG_FILE" =~ ^/[A-Za-z0-9_./-]+$ ]] && [[ "$CONFIG_FILE" != *..* ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$PROXY_MODE" = caddy || "$PROXY_MODE" = external ]]
+          [ -n "$SERVER_SSH_KEY" ] && [ -n "$SERVER_KNOWN_HOSTS" ]
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$SERVER_SSH_KEY" > "$HOME/.ssh/channel_desk"
+          printf '%s\n' "$SERVER_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/channel_desk" "$HOME/.ssh/known_hosts"
+          trap 'rm -f "$HOME/.ssh/channel_desk"' EXIT
+          destination="$DEPLOY_ROOT/releases/$EXPECTED_COMMIT-$RUN_ID-$RUN_ATTEMPT"
+          ssh_options=(-i "$HOME/.ssh/channel_desk" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes)
+          ssh "${ssh_options[@]}" -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "mkdir -p -- '$destination'"
+          scp "${ssh_options[@]}" -P "$SERVER_PORT" release/channel-desk-server.zip "$SERVER_USER@$SERVER_HOST:$destination/package.zip"
+          ssh "${ssh_options[@]}" -p "$SERVER_PORT" "$SERVER_USER@$SERVER_HOST" "unzip -q '$destination/package.zip' -d '$destination/app' && python3 '$destination/app/deploy/server/manage.py' deploy --config '$CONFIG_FILE' --proxy '$PROXY_MODE' --port '$APP_PORT'"
